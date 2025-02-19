@@ -1,0 +1,8 @@
+[package]
+name = "git_config_menu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dirs = "6.0.0"
+toml = "0.8.20"
