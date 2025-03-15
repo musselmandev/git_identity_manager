@@ -51,7 +51,7 @@ local settings.
 
    Use Cargo to build the project:
 
-   `bash cargo build --release`
+   `cargo build --release`
 
    The compiled binary will be available in the `target/release` directory.
 
@@ -60,7 +60,7 @@ local settings.
    You can install the binary to your system (if you have Cargo's bin directory
    in your PATH):
 
-   `bash cargo install --path .`
+   `cargo install --path .`
 
 ## Usage
 
@@ -89,8 +89,8 @@ Enter your choice:
   identity. The tool will run:
 
   ```bash
-  git config user.name "James Musselman"
-  git config user.email "email@example.com"
+  git config user.name "Your Name"
+  git config user.email "your_email@example.com"
   ```
 
   _Note:_ These commands will update your local repository's Git configuration.
