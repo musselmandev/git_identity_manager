@@ -5,13 +5,11 @@ use std::process::Command;
 
 fn main() {
     let config_file = get_config_file_path();
-    // Load existing config or create a new one with an empty identities table.
     let mut config = load_config(&config_file).unwrap_or_else(create_empty_config);
 
     loop {
         println!("\n=== Git Identity Manager ===\n");
 
-        // Display the available identities.
         if let Some(identities_table) = config.get("identities").and_then(|v| v.as_table()) {
             if identities_table.is_empty() {
                 println!("No identities found.");
@@ -52,14 +50,12 @@ fn main() {
             println!("Exiting without changes.");
             break;
         } else if choice.eq_ignore_ascii_case("a") {
-            // Add a new identity.
             let (key, new_identity) = add_new_identity();
             {
                 let identities_table = config
                     .get_mut("identities")
                     .and_then(|v| v.as_table_mut())
                     .expect("Identities must be a table");
-                //FIX: This will overwrite an existing identity with the same key.
                 identities_table.insert(key.clone(), new_identity.clone());
             }
             if let Err(e) = save_config(&config_file, &config) {
@@ -76,9 +72,8 @@ fn main() {
                     println!("Failed to set git identity. Make sure you're in a Git repository.");
                 }
             }
-            break; // Exit after setting an identity.
+            break; 
         } else if let Ok(num) = choice.parse::<usize>() {
-            // Selecting an existing identity.
             let keys: Vec<String> = {
                 if let Some(identities_table) = config.get("identities").and_then(|v| v.as_table())
                 {
@@ -109,7 +104,7 @@ fn main() {
                         }
                     }
                 }
-                break; // Exit after setting an identity.
+                break;
             } else {
                 println!("Invalid selection.");
             }
@@ -201,10 +196,8 @@ fn add_new_identity() -> (String, toml::Value) {
     io::stdin().read_line(&mut email).unwrap();
     let email = email.trim().to_string();
 
-    //TODO: Sanitize the key by replacing spaces with underscores
     let key = display_name.replace(" ", "_");
     let mut id_table = toml::value::Table::new();
-    // Use the full display_name for the "name" field
     id_table.insert("name".to_string(), toml::Value::String(display_name));
     id_table.insert("email".to_string(), toml::Value::String(email));
 
