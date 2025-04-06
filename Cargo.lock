@@ -53,7 +53,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "git_config_menu"
+name = "git-identity-manager"
 version = "0.1.0"
 dependencies = [
  "dirs",

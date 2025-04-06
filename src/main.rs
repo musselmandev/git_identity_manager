@@ -1,124 +1,165 @@
 use std::fs::{create_dir_all, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{exit, Command};
+
+use toml::{Table, Value};
+
+trait ExtValue {
+    fn get_table(&self, key: &str) -> Option<&Table>;
+    fn get_table_keys(&self, key: &str) -> Option<Vec<String>>;
+    fn get_str(&self, key: &str) -> Option<&str>;
+}
+
+impl ExtValue for Value {
+    fn get_table(&self, key: &str) -> Option<&Table> {
+        self.get(key).and_then(Value::as_table)
+    }
+
+    fn get_table_keys(&self, key: &str) -> Option<Vec<String>> {
+        let mut keys = self
+            .get(key)
+            .and_then(Value::as_table)
+            .map(|table| table.keys().cloned().collect::<Vec<_>>())?;
+        keys.sort();
+        Some(keys)
+    }
+
+    fn get_str(&self, key: &str) -> Option<&str> {
+        self.get(key).and_then(Value::as_str)
+    }
+}
 
 fn main() {
+    if let Err(e) = run() {
+        eprintln!("{e}");
+    }
+}
+
+fn read_str() -> String {
+    let mut buffer = String::new();
+    io::stdin().read_line(&mut buffer).unwrap();
+    buffer.trim().into()
+}
+
+fn prompt(text: &str) {
+    print!("{text}");
+    io::stdout().flush().unwrap();
+}
+
+fn add_identities(config: &mut Value, config_file: &Path) -> Result<(), String> {
+    let (key, new_identity) = add_new_identity();
+
+    let identities_table = config
+        .get_mut("identities")
+        .and_then(|v| v.as_table_mut())
+        .ok_or_else(|| "give this a sensible error".to_string())?;
+
+    identities_table.insert(key, new_identity.clone());
+
+    save_config(config_file, config).map_err(|e| format!("Error saving config: {e}"))?;
+
+    let name = new_identity.get_str("name");
+    let email = new_identity.get_str("email");
+
+    let Some((name, email)) = name.zip(email) else {
+        return Ok(());
+    };
+
+    apply_identity(name, email)
+}
+
+fn help() {
+    println!("\nOptions:");
+    println!("  [number] - Select and set that identity");
+    println!("  a        - Add a new identity");
+    println!("  q        - Quit");
+}
+
+fn run() -> Result<(), String> {
     let config_file = get_config_file_path();
     let mut config = load_config(&config_file).unwrap_or_else(create_empty_config);
 
     loop {
         println!("\n=== Git Identity Manager ===\n");
 
-        if let Some(identities_table) = config.get("identities").and_then(|v| v.as_table()) {
-            if identities_table.is_empty() {
-                println!("No identities found.");
-            } else {
+        match config.get_table("identities") {
+            Some(identities_table) if identities_table.is_empty() => {
+                println!("No identities found.")
+            }
+            Some(identities_table) => {
                 println!("Available identities:");
-                let mut keys: Vec<&String> = identities_table.keys().collect();
+
+                let mut keys = identities_table.keys().collect::<Vec<_>>();
                 keys.sort();
+
                 for (i, key) in keys.iter().enumerate() {
-                    if let Some(identity) = identities_table.get(*key) {
-                        let name = identity
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("N/A");
-                        let email = identity
-                            .get("email")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("N/A");
-                        println!("  {}. {} <{}>", i + 1, name, email);
-                    }
+                    let Some(identity) = identities_table.get(*key) else {
+                        continue;
+                    };
+                    let name = identity.get_str("name").unwrap_or("N/A");
+                    let email = identity.get_str("email").unwrap_or("N/A");
+                    println!("  {}. {name} <{email}>", i + 1);
                 }
             }
-        } else {
-            println!("Identities configuration missing.");
+            None => println!("Identities configuration missing."),
         }
 
-        println!("\nOptions:");
-        println!("  [number] - Select and set that identity");
-        println!("  a        - Add a new identity");
-        println!("  q        - Quit");
+        help();
 
-        print!("\nEnter your choice: ");
-        io::stdout().flush().unwrap();
-        let mut choice = String::new();
-        io::stdin().read_line(&mut choice).unwrap();
-        let choice = choice.trim();
+        prompt("\nEnter your choice: ");
+        let choice = read_str();
 
-        if choice.eq_ignore_ascii_case("q") {
-            println!("Exiting without changes.");
-            break;
-        } else if choice.eq_ignore_ascii_case("a") {
-            let (key, new_identity) = add_new_identity();
-            {
-                let identities_table = config
-                    .get_mut("identities")
-                    .and_then(|v| v.as_table_mut())
-                    .expect("Identities must be a table");
-                identities_table.insert(key.clone(), new_identity.clone());
+        match choice.as_str() {
+            "q" | "Q" => {
+                println!("Exiting without changes.");
+                break Ok(());
             }
-            if let Err(e) = save_config(&config_file, &config) {
-                println!("Error saving config: {}", e);
-                break;
-            }
-            if let (Some(name), Some(email)) = (
-                new_identity.get("name").and_then(|v| v.as_str()),
-                new_identity.get("email").and_then(|v| v.as_str()),
-            ) {
-                if apply_identity(name, email) {
-                    println!("Git identity set to {} <{}>", name, email);
-                } else {
-                    println!("Failed to set git identity. Make sure you're in a Git repository.");
-                }
-            }
-            break; 
-        } else if let Ok(num) = choice.parse::<usize>() {
-            let keys: Vec<String> = {
-                if let Some(identities_table) = config.get("identities").and_then(|v| v.as_table())
-                {
-                    let mut keys: Vec<String> = identities_table.keys().cloned().collect();
-                    keys.sort();
-                    keys
-                } else {
-                    vec![]
-                }
-            };
-            if num > 0 && num <= keys.len() {
-                let key = &keys[num - 1];
-                if let Some(identity) = config
-                    .get("identities")
-                    .and_then(|v| v.as_table())
-                    .and_then(|table| table.get(key))
-                {
-                    if let (Some(name), Some(email)) = (
-                        identity.get("name").and_then(|v| v.as_str()),
-                        identity.get("email").and_then(|v| v.as_str()),
-                    ) {
-                        if apply_identity(name, email) {
-                            println!("Git identity set to {} <{}>", name, email);
-                        } else {
-                            println!(
-                                "Failed to set git identity. Make sure you're in a Git repository."
-                            );
-                        }
+            "a" | "A" => break add_identities(&mut config, &config_file),
+            num => {
+                let keys = Option::unwrap_or(config.get_table_keys("identities"), vec![]);
+
+                // Get the relevant key based on the index
+                let key = match num.parse::<usize>() {
+                    Ok(n) if n == 0 || n > keys.len() => {
+                        eprintln!("Invalid selection");
+                        eprintln!("Enter a number between 1 and {}", keys.len());
+                        continue;
                     }
+                    Err(_) => {
+                        eprintln!("Invalid input, enter a number between 1 and {}", keys.len());
+                        continue;
+                    }
+                    Ok(n) => &keys[n - 1],
+                };
+
+                let Some(identity) = config
+                    .get_table("identities")
+                    .and_then(|table| table.get(key))
+                else {
+                    break Ok(());
+                };
+
+                let name = identity.get_str("name");
+                let email = identity.get_str("email");
+
+                if let Some((name, email)) = name.zip(email) {
+                    apply_identity(name, email)?;
                 }
-                break;
-            } else {
-                println!("Invalid selection.");
+
+                break Ok(());
             }
-        } else {
-            println!("Invalid input.");
         }
     }
 }
 
 /// Returns the path to the configuration file using the dirs crate.
 /// This places the file under:
+/// ```text
 /// - Linux/Unix: $XDG_CONFIG_HOME/git_identity_manager/git_identities.toml (or $HOME/.config/...)
 /// - macOS: $HOME/Library/Application Support/git_identity_manager/git_identities.toml
 /// - Windows: %APPDATA%\git_identity_manager\git_identities.toml
+/// ```
 fn get_config_file_path() -> PathBuf {
     let base_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     let config_path = base_dir.join("git_identity_manager");
@@ -129,16 +170,13 @@ fn get_config_file_path() -> PathBuf {
 }
 
 fn load_config(path: &Path) -> Option<toml::Value> {
-    if !path.exists() {
-        return None;
-    }
     let mut file = File::open(path).ok()?;
     let mut contents = String::new();
     file.read_to_string(&mut contents).ok()?;
     toml::from_str(&contents).ok()
 }
 
-fn save_config(path: &Path, config: &toml::Value) -> io::Result<()> {
+fn save_config(path: &Path, config: &Value) -> io::Result<()> {
     let toml_string = format_config(config);
     let mut file = File::create(path)?;
     file.write_all(toml_string.as_bytes())
@@ -147,36 +185,45 @@ fn save_config(path: &Path, config: &toml::Value) -> io::Result<()> {
 /// Formats the configuration in a more conventional TOML style.
 /// For example:
 ///
+/// ```text
 /// [identities.The_Linux_Developer]
 /// name = "The Linux Developer"
 /// email = "email@thelinux.dev"
+/// ```
 fn format_config(config: &toml::Value) -> String {
     let mut output = String::new();
-    if let Some(identities) = config.get("identities").and_then(|v| v.as_table()) {
-        for (key, value) in identities {
-            output.push_str(&format!("[identities.{}]\n", key));
-            if let Some(inner) = value.as_table() {
-                for (k, v) in inner {
-                    if let Some(s) = v.as_str() {
-                        output.push_str(&format!("{} = \"{}\"\n", k, s));
-                    } else {
-                        output.push_str(&format!("{} = {}\n", k, v));
-                    }
-                }
+
+    let Some(identities) = config.get("identities") else {
+        return output;
+    };
+    let Some(identities) = identities.as_table() else {
+        return output;
+    };
+
+    for (key, value) in identities {
+        let Some(inner) = value.as_table() else {
+            continue;
+        };
+
+        output.push_str(&format!("[identities.{}]\n", key));
+
+        for (key, value) in inner {
+            match value.as_str() {
+                Some(value) => output.push_str(&format!("{key} = \"{value}\"\n")),
+                None => output.push_str(&format!("{key} = {value}\n")),
             }
-            output.push('\n');
         }
+
+        output.push('\n');
     }
+
     output
 }
 
 fn create_empty_config() -> toml::Value {
     let mut table = toml::value::Table::new();
-    table.insert(
-        "identities".to_string(),
-        toml::Value::Table(toml::value::Table::new()),
-    );
-    toml::Value::Table(table)
+    table.insert("identities".to_string(), Value::Table(Table::new()));
+    Value::Table(table)
 }
 
 /// Interactively prompts the user to add a new identity.
@@ -184,19 +231,14 @@ fn create_empty_config() -> toml::Value {
 /// as the key in the configuration.
 fn add_new_identity() -> (String, toml::Value) {
     println!("\nAdding new identity:");
-    print!("Enter the Git name for this identity: ");
-    io::stdout().flush().unwrap();
-    let mut display_name = String::new();
-    io::stdin().read_line(&mut display_name).unwrap();
-    let display_name = display_name.trim().to_string();
 
-    print!("Enter your Git email: ");
-    io::stdout().flush().unwrap();
-    let mut email = String::new();
-    io::stdin().read_line(&mut email).unwrap();
-    let email = email.trim().to_string();
+    prompt("Enter the Git name for this identity: ");
+    let display_name = read_str();
 
-    let key = display_name.replace(" ", "_");
+    prompt("Enter your Git email: ");
+    let email = read_str();
+
+    let key = display_name.replace(char::is_whitespace, "_");
     let mut id_table = toml::value::Table::new();
     id_table.insert("name".to_string(), toml::Value::String(display_name));
     id_table.insert("email".to_string(), toml::Value::String(email));
@@ -204,13 +246,21 @@ fn add_new_identity() -> (String, toml::Value) {
     (key, toml::Value::Table(id_table))
 }
 
-fn apply_identity(name: &str, email: &str) -> bool {
+fn apply_identity(name: &str, email: &str) -> Result<(), String> {
     let status_name = Command::new("git")
         .args(["config", "user.name", name])
-        .status();
+        .status()
+        .map_err(|e| e.to_string())?;
     let status_email = Command::new("git")
         .args(["config", "user.email", email])
-        .status();
-    status_name.map(|s| s.success()).unwrap_or(false)
-        && status_email.map(|s| s.success()).unwrap_or(false)
+        .status()
+        .map_err(|e| e.to_string())?;
+
+    let result = status_name.success() && status_email.success();
+    if result {
+        println!("Git identity set to {} <{}>", name, email);
+        Ok(())
+    } else {
+        Err("Failed to set git identity. Make sure you're in a Git repository.".into())
+    }
 }
